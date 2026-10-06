@@ -1,0 +1,104 @@
+{
+  "name": "SLA Monitoring & Escalation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "76002f3e-bd9a-4584-8eca-d0651a6c6855",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    request_id,\n    status,\n    declared_priority,\n    due_at,\n    escalated_at\nFROM service_requests\nWHERE\n    status IN ('Open', 'In Progress')\n    AND due_at <= NOW()\n    AND escalated_at IS NULL\nORDER BY due_at ASC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "fc0d25f2-8d7f-4b4b-9163-0f08b96c6291",
+      "name": "Find SLA Issues",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH escalated_requests AS (\n    UPDATE service_requests\n    SET\n        escalated_at = NOW(),\n        updated_at = NOW()\n    WHERE\n        request_id = '{{ $json.request_id }}'\n        AND escalated_at IS NULL\n    RETURNING\n        request_id,\n        status,\n        declared_priority,\n        due_at,\n        escalated_at\n),\naudit_event AS (\n    INSERT INTO request_events (\n        request_id,\n        event_type,\n        metadata\n    )\n    SELECT\n        request_id,\n        'SLA_BREACHED',\n        jsonb_build_object(\n            'priority', declared_priority,\n            'due_at', due_at,\n            'escalated_at', escalated_at\n        )\n    FROM escalated_requests\n    RETURNING id\n)\nSELECT\n    request_id,\n    status,\n    declared_priority,\n    due_at,\n    escalated_at\nFROM escalated_requests;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        464,
+        0
+      ],
+      "id": "2d2b8678-2ddc-4930-9f4a-85a3a7fe8168",
+      "name": "Escalate SLA Issues",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Find SLA Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find SLA Issues": {
+      "main": [
+        [
+          {
+            "node": "Escalate SLA Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "44e56181-f75b-4c6a-a6a0-bfac74409c95",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ee1e72f2b140c0cf75d8cd7cd2bef1ae5ddb64806115477d630ae937589229f2"
+  },
+  "nodeGroups": [],
+  "id": "13JBBu4uWQTPF1wG",
+  "tags": []
+}

@@ -1,0 +1,337 @@
+{
+  "name": "Service Request - Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "service-requests",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "5c83667b-be0d-4e86-a4d1-ac0ed9097196",
+      "name": "Webhook",
+      "webhookId": "194faabe-a904-4c46-a042-0949db9232ea"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\n\nconst requiredFields = [\n  'requester_name',\n  'requester_email',\n  'department',\n  'title',\n  'description',\n  'declared_priority',\n];\n\nconst missingFields = requiredFields.filter(\n  field =>\n    body[field] === undefined ||\n    body[field] === null ||\n    String(body[field]).trim() === ''\n);\n\nif (missingFields.length > 0) {\n  throw new Error(\n    `Missing required fields: ${missingFields.join(', ')}`\n  );\n}\n\nconst validPriorities = ['P1', 'P2', 'P3', 'P4'];\n\nif (!validPriorities.includes(body.declared_priority)) {\n  throw new Error(\n    `Invalid priority: ${body.declared_priority}`\n  );\n}\n\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n\nif (!emailRegex.test(body.requester_email)) {\n  throw new Error('Invalid requester email');\n}\n\nreturn [\n  {\n    json: body\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "bffe62a8-1dfe-475e-bf06-b904533cb1b4",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst normalizedTitle = data.title\n  .trim()\n  .toLowerCase()\n  .replace(/\\s+/g, ' ');\n\nconst normalizedEmail = data.requester_email\n  .trim()\n  .toLowerCase();\n\nreturn [\n  {\n    json: {\n      ...data,\n\n      requester_email: normalizedEmail,\n\n      normalized_title: normalizedTitle\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "5f6d2505-934d-4cc2-8672-1c323f067c8c",
+      "name": "Normalize Request"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    EXISTS (\n        SELECT 1\n        FROM service_requests\n        WHERE requester_email = $1\n          AND normalized_title = $2\n    ) AS is_duplicate,\n\n    (\n        SELECT request_id\n        FROM service_requests\n        WHERE requester_email = $1\n          AND normalized_title = $2\n        LIMIT 1\n    ) AS existing_request_id;",
+        "options": {
+          "queryReplacement": "={{ $json.requester_email }} {{ $json.normalized_title }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        672,
+        0
+      ],
+      "id": "07f2252e-3c58-4698-90d6-a9ce2eadc3b3",
+      "name": "Find Duplicate",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3e11c3cf-4e12-434c-aba4-a679b3d19eb8",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        0
+      ],
+      "id": "780470f2-fb3c-4ac6-a039-622a4456a3d0",
+      "name": "Duplicate?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Normalize Request').item.json;\n\nconst createdAt = new Date();\n\nfunction isWeekend(date) {\n  const day = date.getUTCDay();\n  return day === 0 || day === 6;\n}\n\nfunction addBusinessDays(date, numberOfDays) {\n  const result = new Date(date);\n  let remaining = numberOfDays;\n\n  while (remaining > 0) {\n    result.setUTCDate(result.getUTCDate() + 1);\n\n    if (!isWeekend(result)) {\n      remaining--;\n    }\n  }\n\n  return result;\n}\n\nfunction setTo17UTC(date) {\n  const result = new Date(date);\n  result.setUTCHours(17, 0, 0, 0);\n  return result;\n}\n\nlet dueAt;\n\nswitch (data.declared_priority) {\n  case 'P1':\n    dueAt = new Date(\n      createdAt.getTime() + 4 * 60 * 60 * 1000\n    );\n    break;\n\n  case 'P2': {\n    let dueDate = new Date(createdAt);\n\n    if (\n      isWeekend(dueDate) ||\n      dueDate.getUTCHours() >= 17\n    ) {\n      dueDate = addBusinessDays(dueDate, 1);\n    }\n\n    dueAt = setTo17UTC(dueDate);\n    break;\n  }\n\n  case 'P3': {\n    let dueDate = addBusinessDays(createdAt, 3);\n    dueAt = setTo17UTC(dueDate);\n    break;\n  }\n\n  case 'P4': {\n    let dueDate = addBusinessDays(createdAt, 5);\n    dueAt = setTo17UTC(dueDate);\n    break;\n  }\n\n  default:\n    throw new Error(\n      `Unsupported priority: ${data.declared_priority}`\n    );\n}\n\nreturn [\n  {\n    json: {\n      ...data,\n      created_at: createdAt.toISOString(),\n      due_at: dueAt.toISOString()\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        96
+      ],
+      "id": "418d7e75-0b8a-4c47-8d38-927b52904dd8",
+      "name": "Calculate SLA"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO service_requests (\n    request_id,\n    requester_name,\n    requester_email,\n    department,\n    title,\n    normalized_title,\n    description,\n    declared_priority,\n    status,\n    created_at,\n    due_at\n)\nVALUES (\n    'REQ-' ||\n    EXTRACT(YEAR FROM NOW())::TEXT ||\n    '-' ||\n    LPAD(\n        nextval('service_request_number_seq')::TEXT,\n        6,\n        '0'\n    ),\n\n    $1,\n    $2,\n    $3,\n    $4,\n    $5,\n    $6,\n    $7,\n    'Open',\n    $8::timestamptz,\n    $9::timestamptz\n)\nRETURNING\n    id,\n    request_id,\n    created_at,\n    due_at;",
+        "options": {
+          "queryReplacement": "={{ $json.requester_name }}\n{{ $json.requester_email }}\n{{ $json.department }}\n{{ $json.title }}\n{{ $json.normalized_title }}\n{{ $json.description }}\n{{ $json.declared_priority }}\n{{ $json.created_at }}\n{{ $json.due_at }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1392,
+        -16
+      ],
+      "id": "9c7e70be-36a3-4666-8739-c1b5608677b8",
+      "name": "Insert Request",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO request_events (\n    request_id,\n    event_type,\n    new_status,\n    metadata\n)\nVALUES (\n    $1,\n    'REQUEST_CREATED',\n    'Open',\n    $2::jsonb\n)\nRETURNING\n    id,\n    request_id,\n    event_type,\n    created_at;",
+        "options": {
+          "queryReplacement": "={{ $json.request_id }}\n{{ JSON.stringify({\n  requester_email: $('Calculate SLA').item.json.requester_email,\n  department: $('Calculate SLA').item.json.department,\n  priority: $('Calculate SLA').item.json.declared_priority,\n  title: $('Calculate SLA').item.json.title\n}) }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1536,
+        -16
+      ],
+      "id": "b37d8805-04bc-45d9-98b9-8738eb1b56f3",
+      "name": "Create Audit Event",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  success: true,\n  request_id: $json.request_id,\n  status: $json.status,\n  created_at: $json.created_at,\n  due_at: $json.due_at\n} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1776,
+        96
+      ],
+      "id": "e8517b54-befd-4b34-b0d2-edb4246ba1f6",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  success: false,\n  error: \"DUPLICATE_REQUEST\",\n  message: \"A request with the same requester email and title already exists.\",\n  request_id: $json.existing_request_id\n} }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1120,
+        -96
+      ],
+      "id": "d8c5892e-df17-4a6f-abe3-2f0aa4a939c6",
+      "name": "Duplicate Response"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH inserted_request AS (\n    INSERT INTO service_requests (\n        request_id,\n        requester_name,\n        requester_email,\n        department,\n        title,\n        normalized_title,\n        description,\n        declared_priority,\n        status,\n        created_at,\n        due_at\n    )\n    VALUES (\n        'REQ-' ||\n        EXTRACT(YEAR FROM NOW())::TEXT ||\n        '-' ||\n        LPAD(\n            nextval('service_request_number_seq')::TEXT,\n            6,\n            '0'\n        ),\n        $1,\n        $2,\n        $3,\n        $4,\n        $5,\n        $6,\n        $7,\n        'Open',\n        $8::timestamptz,\n        $9::timestamptz\n    )\n    RETURNING\n        request_id,\n        requester_name,\n        requester_email,\n        department,\n        title,\n        declared_priority,\n        status,\n        created_at,\n        due_at\n),\naudit_event AS (\n    INSERT INTO request_events (\n        request_id,\n        event_type,\n        new_status,\n        metadata\n    )\n    SELECT\n        request_id,\n        'REQUEST_CREATED',\n        status,\n        jsonb_build_object(\n            'requester_email', requester_email,\n            'department', department,\n            'priority', declared_priority,\n            'title', title\n        )\n    FROM inserted_request\n    RETURNING id\n)\n\nSELECT\n    r.request_id,\n    r.status,\n    r.created_at,\n    r.due_at\nFROM inserted_request r;",
+        "options": {
+          "queryReplacement": "={{ $json.requester_name }}\n{{ $json.requester_email }}\n{{ $json.department }}\n{{ $json.title }}\n{{ $json.normalized_title }}\n{{ $json.description }}\n{{ $json.declared_priority }}\n{{ $json.created_at }}\n{{ $json.due_at }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1456,
+        208
+      ],
+      "id": "e5efc048-0f1e-45f7-ac61-0eb5bfd626c7",
+      "name": "Create Request + Audit",
+      "credentials": {
+        "postgres": {
+          "id": "9B4SOIsJ4RL1v6gC",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Normalize Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Request": {
+      "main": [
+        [
+          {
+            "node": "Find Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calculate SLA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate SLA": {
+      "main": [
+        [
+          {
+            "node": "Create Request + Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Request": {
+      "main": [
+        [
+          {
+            "node": "Create Audit Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Audit Event": {
+      "main": [
+        []
+      ]
+    },
+    "Create Request + Audit": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b36006c0-4384-4700-87aa-7479ef8ebef5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ee1e72f2b140c0cf75d8cd7cd2bef1ae5ddb64806115477d630ae937589229f2"
+  },
+  "nodeGroups": [],
+  "id": "Tv9yNM5tc2dEmNis",
+  "tags": []
+}
